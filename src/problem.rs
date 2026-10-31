@@ -327,6 +327,9 @@ impl Problem {
         if let Some(hint) = &options.warm_start {
             self.validate_hint(hint)?;
         }
+        if let Some(basis) = &options.basis {
+            self.validate_basis(basis)?;
+        }
         let range = CoefficientRange::of(&self.constraints);
         self.solve_validated(options, &range)
             .map_err(|error| range.annotate(error))
@@ -354,7 +357,9 @@ impl Problem {
             let deadline = deadline_after(started, options.time_limit);
             // Lp mode applies only feasible-set-exact reductions, so the live
             // solver stays sound under every later Solution edit.
-            let presolved = if options.presolve {
+            // a basis names the model's own vars and rows, which presolve
+            // would rewrite
+            let presolved = if options.presolve && options.basis.is_none() {
                 presolve::reduced_model(presolve::presolve(
                     &self.obj_coeffs,
                     &self.var_mins,
@@ -390,9 +395,13 @@ impl Problem {
             // rewrote, as written, here and on every later edit or resume.
             if let Some(presolved) = presolved {
                 solver.set_validation_rows(presolved.validation_rows);
+                solver.presolved = true;
             }
             solver.range = range.clone();
             solver.operation_time_limit = options.time_limit;
+            if let Some(basis) = &options.basis {
+                solver.load_basis(&crate::solver::Basis(basis.statuses.clone()))?;
+            }
             let stop = solver.initial_solve()?;
             solver.elapsed += started.elapsed();
             let resume_options = ResumeOptions::from(&options);
@@ -440,6 +449,33 @@ impl Problem {
         }
         for (row, (coeffs, cmp_op, rhs)) in self.constraints.iter().enumerate() {
             check_row(coeffs, *cmp_op, *rhs, row)?;
+        }
+        Ok(())
+    }
+
+    /// `InvalidOptions` for a basis this problem cannot start from: one for a
+    /// problem with integer or boolean variables, or of the wrong shape.
+    fn validate_basis(&self, basis: &crate::Basis) -> Result<(), Error> {
+        if self.has_integer_vars() {
+            return Err(Error::InvalidOptions(
+                "invalid SolveOptions.basis: a basis starts a pure LP, and this problem has \
+                 integer or boolean variables"
+                    .to_string(),
+            ));
+        }
+        let (vars, rows) = (self.obj_coeffs.len(), self.constraints.len());
+        let statuses = basis.statuses();
+        let basic = statuses
+            .iter()
+            .filter(|s| **s == crate::BasisStatus::Basic)
+            .count();
+        if statuses.len() != vars + rows || basic != rows {
+            return Err(Error::InvalidOptions(format!(
+                "invalid SolveOptions.basis: expected {} statuses with {rows} basic for {vars} \
+                 variables and {rows} constraints, got {} with {basic} basic",
+                vars + rows,
+                statuses.len()
+            )));
         }
         Ok(())
     }

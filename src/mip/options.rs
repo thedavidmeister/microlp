@@ -73,6 +73,15 @@ pub struct SolveOptions {
     /// only real variables validates the hint the same way but does not use
     /// it. Default `None`.
     pub warm_start: Option<Vec<(Variable, f64)>>,
+    /// A basis to start a pure-LP solve from, such as the
+    /// [`Solution::basis`](crate::Solution::basis) of an earlier solve of the
+    /// same model with other bounds or right-hand sides. It names the model's
+    /// own variables and rows, so a solve given one skips presolve. A basis
+    /// whose shape does not fit the model (a status per variable, then per
+    /// constraint, with as many basic as there are constraints), or one given
+    /// for a problem with integer or boolean variables, makes the solve return
+    /// [`Error::InvalidOptions`]. Default `None`.
+    pub basis: Option<crate::Basis>,
     /// Enable presolve, which reduces the problem before the search starts
     /// (dropping redundant rows and, for integer variables, tightening bounds,
     /// fixing variables and tightening big-M coefficients). It never removes
@@ -119,6 +128,7 @@ impl Default for SolveOptions {
             mip_gap: 0.0,
             int_tol: 1e-6,
             warm_start: None,
+            basis: None,
             presolve: true,
             dual_fixing: true,
             tolerances: Tolerances::default(),

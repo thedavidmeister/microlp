@@ -284,6 +284,9 @@ pub(crate) struct Solver {
     /// misses ([`Self::hold_validation_rows`]), and the MIP guard rejects such
     /// a candidate.
     validation_rows: Vec<(CsVec, ComparisonOp, f64)>,
+    /// Whether presolve reduced the model this engine solves, so that its
+    /// basis names the reduced model's vars and rows, not the user's.
+    pub(crate) presolved: bool,
 
     enable_primal_steepest_edge: bool,
     enable_dual_steepest_edge: bool,
@@ -504,11 +507,14 @@ enum Verdict {
     Unrepresentable,
 }
 
-/// Status of one variable in a simplex basis snapshot.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum VarStatus {
+/// Status of one variable or slack in a simplex basis snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VarStatus {
+    /// In the basis: its value follows from the non-basic ones.
     Basic,
+    /// Non-basic at its lower bound.
     AtLower,
+    /// Non-basic at its upper bound.
     AtUpper,
     /// Non-basic free variable (both bounds infinite), pinned at 0.
     Free,
@@ -766,6 +772,7 @@ impl Solver {
             var_tols,
             dual_tols: vec![0.0; num_total_vars],
             validation_rows: Vec::new(),
+            presolved: false,
             deadline,
             operation_time_limit: None,
             lp_iterations: 0,

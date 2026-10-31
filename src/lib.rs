@@ -160,6 +160,7 @@ solution and returns a new [`SolveOutcome`] for the edited problem.
 #[macro_use]
 extern crate log;
 
+mod basis;
 mod clock;
 mod error;
 mod expr;
@@ -180,6 +181,7 @@ mod solver;
 mod sparse;
 mod tests;
 
+pub use basis::{Basis, BasisStatus};
 pub use error::Error;
 pub use expr::{ComparisonOp, LinearExpr, LinearTerm, OptimizationDirection, Variable};
 pub use mip::{ResumeOptions, SolutionStatus, SolveOptions, Stats, TerminationReason, Tolerances};

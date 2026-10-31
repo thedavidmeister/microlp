@@ -182,6 +182,22 @@ impl Solution {
         }
     }
 
+    /// The basis this pure-LP solution ends on, to start a later solve of the
+    /// same model from ([`SolveOptions::basis`]). `None` for a problem with
+    /// integer or boolean variables, and for a solve whose presolve reduced
+    /// the model, since the basis would then name the reduced model's
+    /// variables and rows (solve with `presolve` off, or with a basis, to keep
+    /// one). After [`Solution::add_constraint`] it covers the added rows too,
+    /// so it fits a model with them added in the same order.
+    pub fn basis(&self) -> Option<crate::Basis> {
+        match &self.state {
+            SolveState::Lp(solver) if !solver.presolved => Some(crate::Basis {
+                statuses: solver.snapshot_basis().0,
+            }),
+            _ => None,
+        }
+    }
+
     /// Returns solve statistics associated with this solution.
     ///
     /// The values include any resumes that led to this solution.
