@@ -128,6 +128,7 @@ impl Default for SolveOptions {
 
 impl SolveOptions {
     pub(crate) fn validate(&self) -> Result<(), Error> {
+        crate::clock::check_time_limit("SolveOptions.time_limit", self.time_limit)?;
         if !self.mip_gap.is_finite() || self.mip_gap < 0.0 {
             return Err(Error::InvalidOptions(
                 "invalid SolveOptions.mip_gap: expected a finite non-negative value".to_string(),
@@ -175,6 +176,7 @@ pub struct ResumeOptions {
 
 impl ResumeOptions {
     pub(crate) fn validate(&self) -> Result<(), Error> {
+        crate::clock::check_time_limit("ResumeOptions.time_limit", self.time_limit)?;
         if let Some(mip_gap) = self.mip_gap {
             if !mip_gap.is_finite() || mip_gap < 0.0 {
                 return Err(Error::InvalidOptions(

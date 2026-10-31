@@ -1,12 +1,12 @@
 //! What a solve-like call returns: either a [`Solution`] or, when a limit cut
 //! the search short, an [`InterruptedSolve`] that can be resumed.
 
+use crate::clock::Instant;
 use crate::solver::Solver;
 use crate::{
     mip, timed_lp_call, Error, OptimizationDirection, ResumeOptions, Solution, SolutionStatus,
     SolveState, Stats, StopReason, TerminationReason,
 };
-use web_time::Instant;
 
 /// The result of a successful solve.
 ///

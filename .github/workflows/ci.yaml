@@ -79,6 +79,13 @@ jobs:
       - name: Test Rust (unit tests)
         run: cargo test --locked --release --lib
 
+      - name: Unit tests without the clock
+        run: cargo test --locked --release --no-default-features --lib tests_clock
+
+      - name: No clock dependency without the clock
+        shell: bash
+        run: "! cargo tree --locked --no-default-features -e normal | grep -q web-time"
+
       - name: Doctests
         run: cargo test --locked --release --doc
 

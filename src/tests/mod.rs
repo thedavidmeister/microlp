@@ -22,3 +22,5 @@ mod magnitudes;
 mod scaling;
 
 mod presolve_api;
+
+mod clock;

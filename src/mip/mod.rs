@@ -23,12 +23,12 @@ pub use options::{
 };
 pub(crate) use state::{MipRun, MipState};
 
+use crate::clock::Instant;
 use crate::solver::{deadline_after, Solver};
 use crate::{Error, OptimizationDirection, Problem, VarDomain, Variable};
 use lattice::ObjectiveLattice;
 use search::search_loop;
 use std::collections::BTreeMap;
-use web_time::Instant;
 
 fn build_state(problem: &Problem, options: SolveOptions) -> Result<MipState, Error> {
     let deadline = deadline_after(Instant::now(), options.time_limit);

@@ -18,7 +18,7 @@ exclude = ["tests/suite/data", "benchmark", "BENCHMARK.md", "/docs"]
 [dependencies]
 sprs = { version = "0.11.4", default-features = false }
 log = "0.4.33"
-web-time = "1.1.0"
+web-time = { version = "1.1.0", optional = true }
 # Optional, off by default: only built for `cargo test --features highs`, which
 # turns on the suite's HiGHS cross-checks. Building it needs a C++ toolchain,
 # CMake and libclang, so plain `cargo test` and downstream consumers never pull
@@ -26,6 +26,11 @@ web-time = "1.1.0"
 highs = { version = "2.4.0", optional = true }
 
 [features]
+default = ["clock"]
+# Time limits and elapsed-time stats. Off, the crate never reads a clock, for
+# hosts without one (such as `wasm32-unknown-unknown` outside a JavaScript host
+# with `performance.now()`); a time limit is then an invalid option.
+clock = ["dep:web-time"]
 # Test-only: cross-checks the correctness suite's MWIS warm-start cases
 # against HiGHS (see the optional `highs` dep). The library never uses it, so
 # a crate that depends on microlp has no reason to enable it.

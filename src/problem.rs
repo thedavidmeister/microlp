@@ -1,8 +1,8 @@
 //! The model itself: [`Problem`], the variable domains it accepts, and the
 //! entry points that hand it to the LP engine or the branch & bound driver.
 
+use crate::clock::Instant;
 use core::time::Duration;
-use web_time::Instant;
 
 use crate::range::CoefficientRange;
 use crate::solver::{deadline_after, valid_rhs, Solver};

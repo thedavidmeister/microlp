@@ -3040,7 +3040,7 @@ fn dual_phase_fails_loudly_when_only_taboo_changes_are_left() {
     sol.cycle_guard.record_pivot();
     assert!(sol.cycle_guard.is_bad_change(row, leaving, entering, here));
     // A phase that ran on instead would stop at the limit, and fail below.
-    sol.deadline = Some(Instant::now() + Duration::from_secs(10));
+    sol.deadline = Instant::now().checked_add(Duration::from_secs(10));
     let result = sol.dual_phase();
     sol.end_dual_phase();
     assert!(
@@ -3076,7 +3076,7 @@ fn dual_phase_names_a_singular_basis_when_only_its_change_is_left() {
     let (leaving, entering) = (sol.basic_vars[row], sol.nb_vars[col]);
     sol.cycle_guard.add_singular_change(row, leaving, entering);
     // A phase that ran on instead would stop at the limit, and fail below.
-    sol.deadline = Some(Instant::now() + Duration::from_secs(10));
+    sol.deadline = Instant::now().checked_add(Duration::from_secs(10));
     let result = sol.dual_phase();
     sol.end_dual_phase();
     assert!(
@@ -3835,7 +3835,7 @@ fn a_fixed_vars_huge_entry_leaves_a_genuine_pivot_regular() {
     assert!(!sol.cycle_guard.is_bad_change(row, leaving, entering, here));
     sol.cycle_guard.record_pivot();
     assert!(sol.cycle_guard.is_bad_change(row, leaving, entering, here));
-    sol.deadline = Some(Instant::now() + Duration::from_secs(10));
+    sol.deadline = Instant::now().checked_add(Duration::from_secs(10));
     let iterations = sol.lp_iterations;
     let result = sol.dual_phase();
     sol.end_dual_phase();
@@ -4407,7 +4407,7 @@ fn primal_phase_fails_loudly_when_only_taboo_changes_are_left() {
     sol.nb_var_obj_coeffs[x0] = 0.0;
     sol.orig_obj_coeffs[0] = 0.0;
     // A phase that ran on instead would stop at the limit, and fail below.
-    sol.deadline = Some(Instant::now() + Duration::from_secs(10));
+    sol.deadline = Instant::now().checked_add(Duration::from_secs(10));
     let result = sol.primal_phase(1.0);
     sol.end_primal_phase().unwrap();
     assert!(

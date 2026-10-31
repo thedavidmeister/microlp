@@ -160,6 +160,7 @@ solution and returns a new [`SolveOutcome`] for the edited problem.
 #[macro_use]
 extern crate log;
 
+mod clock;
 mod error;
 mod expr;
 mod helpers;

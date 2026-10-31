@@ -43,7 +43,7 @@ use crate::{
 };
 use sprs::CompressedStorage;
 
-use web_time::Instant;
+use crate::clock::Instant;
 
 pub(crate) type Deadline = Option<Instant>;
 

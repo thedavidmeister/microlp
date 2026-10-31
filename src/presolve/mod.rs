@@ -149,7 +149,7 @@ pub(crate) fn presolve(
     int_tol: f64,
     allow_dual: bool,
 ) -> Result<Presolved, Error> {
-    let started = web_time::Instant::now();
+    let started = crate::clock::Instant::now();
     let num_vars = obj_coeffs.len();
     let mut lo = var_mins.to_vec();
     let mut hi = var_maxs.to_vec();
