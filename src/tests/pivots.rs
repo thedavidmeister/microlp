@@ -47,6 +47,8 @@ fn a_pivot_budget_resumes_to_the_same_optimum() {
         before = outcome.stats().lp_iterations;
         outcome = outcome.resume().unwrap();
         calls += 1;
+        // each call but the last pivots: the budget is fresh from where the last stopped
+        assert!(calls <= total + 1, "{calls} calls for {total} pivots");
     }
     assert!(calls > 2, "{calls} calls");
     let sliced = outcome.into_solution().unwrap();
