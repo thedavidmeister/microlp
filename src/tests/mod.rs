@@ -8,6 +8,9 @@ mod tsp;
 
 mod resume;
 
+#[cfg(test)]
+mod pivots;
+
 pub(crate) mod regressions;
 
 mod mip_api;

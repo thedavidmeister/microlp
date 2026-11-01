@@ -101,7 +101,11 @@ impl SolveOutcome {
             StopReason::Limit => Ok(Self::Interrupted(InterruptedSolve {
                 direction,
                 num_vars,
-                termination_reason: TerminationReason::TimeLimit,
+                termination_reason: if solver.pivots_spent() {
+                    TerminationReason::PivotLimit
+                } else {
+                    TerminationReason::TimeLimit
+                },
                 state: SolveState::Lp(solver),
                 last_options,
             })),
@@ -163,6 +167,9 @@ impl SolveOutcome {
                     state: SolveState::Mip(Box::new(state)),
                     last_options,
                 })
+            }
+            TerminationReason::PivotLimit => {
+                unreachable!("a problem with integer variables refuses a pivot limit")
             }
         }
     }
@@ -289,10 +296,17 @@ impl SolveOutcome {
         match state {
             SolveState::Lp(mut solver) => {
                 solver.operation_time_limit = options.time_limit;
+                solver.operation_pivot_limit = options.pivot_limit;
                 let stop = timed_lp_call(&mut solver, options.time_limit, Solver::initial_solve)?;
                 Self::from_lp_stop(direction, num_vars, stop, solver, options)
             }
             SolveState::Mip(mut state) => {
+                if options.pivot_limit.is_some() {
+                    return Err(Error::InvalidOptions(
+                        "invalid ResumeOptions.pivot_limit: a problem with integer variables takes a node_limit"
+                            .to_string(),
+                    ));
+                }
                 let reason = mip::resume_run(&mut state, options.clone())?;
                 Ok(Self::from_mip_run(
                     direction,

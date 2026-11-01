@@ -274,6 +274,7 @@ pub(crate) fn timed_lp_call<T>(
 ) -> Result<T, Error> {
     let started = Instant::now();
     solver.deadline = deadline_after(started, time_limit);
+    solver.start_pivot_budget();
     let result = call(solver);
     solver.elapsed += started.elapsed();
     result
@@ -344,6 +345,12 @@ impl Problem {
     ) -> Result<SolveOutcome, Error> {
         let num_vars = self.obj_coeffs.len();
         if self.has_integer_vars() {
+            if options.pivot_limit.is_some() {
+                return Err(Error::InvalidOptions(
+                    "invalid SolveOptions.pivot_limit: a problem with integer variables takes a node_limit"
+                        .to_string(),
+                ));
+            }
             let run = mip::run(self, options.clone())?;
             let resume_options = ResumeOptions::from(&options);
             Ok(SolveOutcome::from_mip_run(
@@ -399,6 +406,8 @@ impl Problem {
             }
             solver.range = range.clone();
             solver.operation_time_limit = options.time_limit;
+            solver.operation_pivot_limit = options.pivot_limit;
+            solver.start_pivot_budget();
             if let Some(basis) = &options.basis {
                 solver.load_basis(&crate::solver::Basis(basis.statuses.clone()))?;
             }

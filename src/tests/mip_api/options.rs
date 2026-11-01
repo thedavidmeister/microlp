@@ -65,6 +65,7 @@ fn resume_with_replaces_old_call_options_and_resume_reuses_the_replacements() {
     let replacements = ResumeOptions {
         time_limit: None,
         node_limit: Some(0),
+        pivot_limit: None,
         mip_gap: None,
     };
     let interrupted = interrupted.resume_with(replacements.clone()).unwrap();

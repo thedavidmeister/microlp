@@ -27,6 +27,8 @@ pub enum TerminationReason {
     TimeLimit,
     /// The branch-and-bound node budget for this call was exhausted.
     NodeLimit,
+    /// The pivot budget of this pure-LP call was exhausted.
+    PivotLimit,
 }
 
 /// Options controlling a solve. Construct with [`SolveOptions::default`] and
@@ -43,6 +45,12 @@ pub struct SolveOptions {
     /// budget applies per call, so [`crate::SolveOutcome::resume`] reapplies it
     /// as a fresh budget. The root relaxation does not count as a node.
     pub node_limit: Option<u64>,
+    /// Maximum number of simplex pivots in this call of a pure LP (`None` =
+    /// unlimited): the deterministic alternative to `time_limit` for an LP, as
+    /// `node_limit` is for a MIP. The solve stops between pivots once it is
+    /// reached and can be resumed, the budget fresh for each call. A problem
+    /// with integer or boolean variables refuses it.
+    pub pivot_limit: Option<u64>,
     /// Relative MIP gap at which the search may stop with a feasible incumbent.
     /// Such a stop reports [`SolutionStatus::Feasible`] and
     /// [`TerminationReason::MipGap`]. Must be finite and non-negative. Default
@@ -125,6 +133,7 @@ impl Default for SolveOptions {
         Self {
             time_limit: None,
             node_limit: None,
+            pivot_limit: None,
             mip_gap: 0.0,
             int_tol: 1e-6,
             warm_start: None,
@@ -180,6 +189,8 @@ pub struct ResumeOptions {
     pub time_limit: Option<Duration>,
     /// New branch-and-bound node budget (`None` = unlimited).
     pub node_limit: Option<u64>,
+    /// New pure-LP pivot budget (`None` = unlimited).
+    pub pivot_limit: Option<u64>,
     /// New relative MIP gap (`None` = no MIP gap / exact optimality `0.0`).
     pub mip_gap: Option<f64>,
 }

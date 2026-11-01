@@ -53,6 +53,7 @@ impl From<&SolveOptions> for ResumeOptions {
         Self {
             time_limit: options.time_limit,
             node_limit: options.node_limit,
+            pivot_limit: options.pivot_limit,
             mip_gap: if options.mip_gap == 0.0 {
                 None
             } else {

@@ -222,6 +222,10 @@ pub(crate) struct Solver {
     pub(crate) deadline: Deadline,
     /// Duration granted to each subsequent public pure-LP operation.
     pub(crate) operation_time_limit: Option<Duration>,
+    /// Pivots granted to each subsequent public pure-LP operation.
+    pub(crate) operation_pivot_limit: Option<u64>,
+    /// The pivot count (`lp_iterations`) at which the current operation's pivots run out.
+    pub(crate) pivot_stop: Option<u64>,
     /// Total number of simplex pivots performed across all solves/reoptimizes on this instance.
     pub(crate) lp_iterations: u64,
     /// Wall-clock time accumulated by public pure-LP operations.
@@ -775,6 +779,8 @@ impl Solver {
             presolved: false,
             deadline,
             operation_time_limit: None,
+            operation_pivot_limit: None,
+            pivot_stop: None,
             lp_iterations: 0,
             elapsed: Duration::ZERO,
             orig_var_domains: var_domains.to_vec(),
@@ -2256,6 +2262,19 @@ impl Solver {
         self.num_vars + self.num_constraints()
     }
 
+    /// Whether the current operation has pivoted all it may.
+    pub(crate) fn pivots_spent(&self) -> bool {
+        self.pivot_stop
+            .is_some_and(|stop| self.lp_iterations >= stop)
+    }
+
+    /// Starts the current operation's pivot budget, `operation_pivot_limit` from now.
+    pub(crate) fn start_pivot_budget(&mut self) {
+        self.pivot_stop = self
+            .operation_pivot_limit
+            .map(|limit| self.lp_iterations.saturating_add(limit));
+    }
+
     pub(crate) fn initial_solve(&mut self) -> Result<StopReason, Error> {
         if check_deadline(&self.deadline) == StopReason::Limit {
             return Ok(StopReason::Limit);
@@ -2320,6 +2339,9 @@ impl Solver {
         // The objective at the last stall check.
         let mut stall_reference = self.cur_obj_val;
         for iter in 0.. {
+            if self.pivots_spent() {
+                return Ok((StopReason::Limit, pivoted));
+            }
             self.lp_iterations += 1;
             if iter % DEADLINE_CHECK_INTERVAL == 0 {
                 if check_deadline(&self.deadline) == StopReason::Limit {
@@ -2587,6 +2609,9 @@ impl Solver {
         let mut last_resort_tried: Option<usize> = None;
 
         for iter in 0.. {
+            if self.pivots_spent() {
+                return Ok(StopReason::Limit);
+            }
             self.lp_iterations += 1;
             if iter % DEADLINE_CHECK_INTERVAL == 0 {
                 if check_deadline(&self.deadline) == StopReason::Limit {
