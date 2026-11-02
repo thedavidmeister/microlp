@@ -4968,3 +4968,129 @@ fn a_widened_slack_bound_follows_its_rows_room() {
     };
     assert_eq!(sol.basic_var_mins[row], refit);
 }
+
+/// A dense LP over `n` variables and `m` rows with fixed pseudo-random
+/// positive coefficients: maximizing over rows of at most a positive amount
+/// (`covering` false), feasible at the origin, or minimizing over rows of at
+/// least one (`covering` true), infeasible there.
+fn dense_lp(n: usize, m: usize, covering: bool) -> Problem {
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        1.0 + (seed % 97) as f64
+    };
+    let direction = if covering {
+        OptimizationDirection::Minimize
+    } else {
+        OptimizationDirection::Maximize
+    };
+    let mut p = Problem::new(direction);
+    let vars: Vec<_> = (0..n)
+        .map(|_| p.add_var(next(), (0.0, f64::INFINITY)))
+        .collect();
+    let op = if covering {
+        ComparisonOp::Ge
+    } else {
+        ComparisonOp::Le
+    };
+    for _ in 0..m {
+        let row: Vec<_> = vars.iter().map(|v| (*v, next())).collect();
+        p.add_constraint(row, op, 1000.0 * next());
+    }
+    p
+}
+
+/// `p`'s engine, solved with at most `pivots` pivots.
+fn engine_after(p: &Problem, pivots: u64) -> Box<Solver> {
+    let mut options = crate::SolveOptions::default();
+    options.presolve = false;
+    options.pivot_limit = Some(pivots);
+    let state = match p.solve_with(options).unwrap() {
+        crate::SolveOutcome::Interrupted(interrupted) => interrupted.state,
+        crate::SolveOutcome::Solution(solution) => solution.state,
+    };
+    match state {
+        crate::SolveState::Lp(solver) => solver,
+        crate::SolveState::Mip(_) => panic!("a pure LP"),
+    }
+}
+
+/// A resume with no pivots to spend stops where the last call left it: the
+/// attempt, its round and cleanup flag, the phase loop to the iteration, its
+/// working costs or bounds, the basis and the answer to return to, however
+/// late an attempt or round the limit stopped.
+#[test]
+fn a_resume_goes_on_from_where_the_limit_stopped_it() {
+    init();
+    for (p, pivots) in [
+        (dense_lp(30, 20, false), 3),
+        (dense_lp(60, 40, true), 1),
+        (dense_lp(60, 40, true), 4),
+    ] {
+        let mut sol = engine_after(&p, pivots);
+        let mut paused = sol
+            .paused
+            .clone()
+            .unwrap_or_else(|| panic!("{pivots}: {} pivots, no pause", sol.lp_iterations));
+        match &paused.phase {
+            PausedPhase::Primal(l) => {
+                assert!(
+                    l.iter > 0 && l.pivoted && l.stall_reference.is_finite(),
+                    "{l:?}"
+                );
+                assert!(sol.bounds_modified || !sol.costs_modified);
+            }
+            PausedPhase::Dual(l) => {
+                assert!(l.iter > 0 && l.stall_reference.is_finite(), "{l:?}");
+                // far from optimal, the dual phase runs on perturbed costs
+                assert!(sol.costs_modified);
+            }
+        }
+        paused.from_slack_basis = true;
+        paused.round = 2;
+        paused.cleanup = true;
+        sol.paused = Some(paused.clone());
+        sol.fallback = Some(Box::new(sol.verified_answer(0.0)));
+        sol.held.push((0, true));
+        let before = (
+            sol.basic_vars.clone(),
+            sol.costs_modified,
+            sol.bounds_modified,
+        );
+        sol.pivot_stop = Some(sol.lp_iterations);
+        assert_eq!(sol.run_phases().unwrap(), StopReason::Limit);
+        let again = sol.paused.clone().expect("still paused");
+        assert_eq!(
+            (again.from_slack_basis, again.round, again.cleanup),
+            (true, 2, true)
+        );
+        assert_eq!(format!("{:?}", again.phase), format!("{:?}", paused.phase));
+        assert!(sol.fallback.is_some());
+        assert_eq!(sol.held, vec![(0, true)]);
+        assert_eq!(
+            (
+                sol.basic_vars.clone(),
+                sol.costs_modified,
+                sol.bounds_modified
+            ),
+            before
+        );
+    }
+}
+
+/// The attempt from the slack basis, stopped by the limit, is kept as that
+/// attempt.
+#[test]
+fn a_paused_slack_attempt_is_the_slack_attempt() {
+    init();
+    let mut sol = engine_after(&dense_lp(60, 40, true), u64::MAX);
+    assert!(sol.paused.is_none());
+    sol.pivot_stop = Some(sol.lp_iterations + 1);
+    assert_eq!(
+        sol.phase_rounds_from_slack_basis().unwrap(),
+        Some(StopReason::Limit)
+    );
+    assert!(sol.paused.as_ref().unwrap().from_slack_basis);
+}
