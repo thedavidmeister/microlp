@@ -383,3 +383,28 @@ fn invalid_resume_options_keep_the_stats_so_far() {
     assert!(matches!(error, Error::InvalidOptions(_)), "{error:?}");
     assert_eq!(stats.lp_iterations, 3);
 }
+
+#[test]
+fn an_interrupted_solve_hands_on_its_basis() {
+    // stopped partway, its basis starts a solve of the same model that reaches the same
+    // optimum in fewer pivots than one from nothing
+    let p = covering(30, 20);
+    let cold = p.solve_with(unpresolved(None)).unwrap();
+    let total = cold.stats().lp_iterations;
+    let half = total / 2;
+    let going = p.solve_with(unpresolved(Some(half))).unwrap();
+    let SolveOutcome::Interrupted(going) = going else {
+        panic!("a solve longer than {half} pivots")
+    };
+    let basis = going.basis().expect("a pure LP keeps a basis");
+    let warm = p
+        .solve_with(SolveOptions {
+            basis: Some(basis),
+            ..unpresolved(None)
+        })
+        .unwrap();
+    let (cold, warm_pivots) = (cold.into_solution().unwrap(), warm.stats().lp_iterations);
+    let warm = warm.into_solution().unwrap();
+    assert!((warm.objective() - cold.objective()).abs() < 1e-6 * cold.objective().abs());
+    assert!(warm_pivots < total, "{warm_pivots} of {total}");
+}

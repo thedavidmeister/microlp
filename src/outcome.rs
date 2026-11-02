@@ -423,6 +423,18 @@ impl InterruptedSolve {
         })
     }
 
+    /// The basis an interrupted pure-LP solve stands at, to start a solve of the same model,
+    /// or of one with other numbers, from (see [`crate::SolveOptions::basis`]); None for a
+    /// problem with integer variables, or one presolve rewrote.
+    pub fn basis(&self) -> Option<crate::Basis> {
+        match &self.state {
+            SolveState::Lp(solver) if !solver.presolved => Some(crate::Basis {
+                statuses: solver.snapshot_basis().0,
+            }),
+            _ => None,
+        }
+    }
+
     /// A bound on the optimum of an interrupted pure-LP solve, from the
     /// multipliers of the basis it stands at: no point of the problem's rows
     /// and bounds has an objective beyond it (below it when minimizing, above
