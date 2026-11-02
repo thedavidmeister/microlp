@@ -110,3 +110,55 @@ fn a_problem_with_integers_refuses_a_pivot_budget() {
     // an optimal outcome returns as it is, unresumed
     assert!(outcome.resume_with(resume).is_ok());
 }
+
+/// A dense LP over `n` variables and `m` rows with fixed pseudo-random positive coefficients,
+/// minimizing a positive cost over rows of at least a positive amount: infeasible at the origin,
+/// so the dual phase starts it.
+fn covering(n: usize, m: usize) -> Problem {
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        1.0 + (seed % 97) as f64
+    };
+    let mut p = Problem::new(OptimizationDirection::Minimize);
+    let vars: Vec<Variable> = (0..n)
+        .map(|_| p.add_var(next(), (0.0, f64::INFINITY)))
+        .collect();
+    for _ in 0..m {
+        let row: Vec<(Variable, f64)> = vars.iter().map(|v| (*v, next())).collect();
+        p.add_constraint(row, ComparisonOp::Ge, 1000.0 * next());
+    }
+    p
+}
+
+/// `p` solved `limit` pivots a call, resumed until optimal: the calls, the pivots over them,
+/// and the outcome. Panics past `max_calls`.
+fn sliced(p: &Problem, limit: u64, max_calls: u64) -> (u64, u64, SolveOutcome) {
+    let mut outcome = p.solve_with(options(Some(limit))).unwrap();
+    let mut calls = 1;
+    while !outcome.is_optimal() {
+        assert!(calls < max_calls, "{calls} calls at {limit} pivots a call");
+        outcome = outcome.resume().unwrap();
+        calls += 1;
+    }
+    (calls, outcome.stats().lp_iterations, outcome)
+}
+
+#[test]
+fn a_sliced_solve_makes_the_pivots_of_the_whole_one() {
+    for p in [dense(30, 20), dense(60, 40), covering(30, 20), covering(60, 40)] {
+        let whole = p.solve_with(options(None)).unwrap();
+        let pivots = whole.stats().lp_iterations;
+        let whole = whole.into_solution().unwrap();
+        for limit in [1, 2, 3, 20] {
+            let (calls, spent, outcome) = sliced(&p, limit, 10 * pivots + 10);
+            // every call keeps its pivots: the same pivots as the whole solve, `limit` a call
+            assert_eq!(spent, pivots, "at {limit} pivots a call");
+            assert_eq!(calls, pivots.div_ceil(limit).max(1), "at {limit} pivots a call");
+            let sliced = outcome.into_solution().unwrap();
+            assert_eq!(sliced.objective(), whole.objective(), "at {limit} pivots a call");
+        }
+    }
+}

@@ -393,6 +393,12 @@ pub(crate) struct Solver {
     /// any var nor proving the model infeasible: [`Self::run_phases`] starts
     /// over once from the slack basis.
     unrepaired_row: Option<usize>,
+    /// Where the last call of [`Self::run_phases`] stopped at a limit, which
+    /// the next goes on from in place ([`Paused`]).
+    paused: Option<Paused>,
+    /// The phase loop a limit just stopped, for [`Self::phase_rounds`] to
+    /// keep in [`Self::paused`].
+    paused_phase: Option<PausedPhase>,
     /// The bounds the certificate repair widened by their var's tolerance in
     /// this solve, with the model's values ([`Self::widen`]): `orig_var_mins`
     /// and `orig_var_maxs` hold the bounds in force. The boundary's checks
@@ -418,6 +424,43 @@ pub(crate) struct Solver {
 struct UndoneRefinement {
     values: Vec<f64>,
     misses: Vec<(usize, bool)>,
+}
+
+/// An attempt of [`Solver::run_phases`] stopped at a limit: which attempt,
+/// its round and cleanup flag, and the phase it stopped in, whose working
+/// costs or bounds stay in force. The next call goes on from here, so every
+/// pivot a call makes is kept.
+#[derive(Clone, Debug)]
+struct Paused {
+    from_slack_basis: bool,
+    round: usize,
+    cleanup: bool,
+    phase: PausedPhase,
+}
+
+#[derive(Clone, Debug)]
+enum PausedPhase {
+    Dual(DualLoop),
+    Primal(PrimalLoop),
+}
+
+/// The loop state of [`Solver::dual_phase`].
+#[derive(Clone, Debug)]
+struct DualLoop {
+    iter: u64,
+    refreshed_since_pivot: bool,
+    stall_reference: f64,
+    last_resort_row: Option<usize>,
+    last_resort_tried: Option<usize>,
+}
+
+/// The loop state of [`Solver::primal_phase`].
+#[derive(Clone, Debug)]
+struct PrimalLoop {
+    iter: u64,
+    pivoted: bool,
+    refreshed_since_step: bool,
+    stall_reference: f64,
 }
 
 /// An answer the verification and the dual check accepted, to return to
@@ -827,6 +870,8 @@ impl Solver {
             undone: None,
             fallback: None,
             unrepaired_row: None,
+            paused: None,
+            paused_phase: None,
             widened: Vec::new(),
             cur_obj_val: obj_val,
             col_coeffs: SparseVec::new(),
@@ -1331,23 +1376,41 @@ impl Solver {
     /// ladder; a second time is an `InternalError`. An attempt that went on
     /// from refined values ends no worse than the answer its first excursion
     /// started from ([`Self::keep_the_better_answer`]).
+    ///
+    /// A call the pivot limit stops keeps its place ([`Self::pause`]), and the
+    /// next goes on from it, so each call's pivots are kept.
     fn run_phases(&mut self) -> Result<StopReason, Error> {
-        self.start_attempt();
-        self.unrepaired_row = None;
-        let first = self.phase_rounds();
-        let first = self.keep_the_better_answer(first);
-        match (first, self.unrepaired_row.take()) {
-            (Ok(Some(stop)), _) => return Ok(stop),
-            (Ok(None), _) => debug!(
-                "verify: no factorization represents the vertex; solving again from the slack basis"
-            ),
-            (Err(_), Some(row)) => debug!(
-                "dual simplex: no var can repair row {row}, which proves nothing; solving again \
-                 from the slack basis"
-            ),
-            (Err(error), None) => return Err(error),
+        let paused = self.paused.take();
+        let second = match paused {
+            Some(paused) if paused.from_slack_basis => self.phase_rounds(true, Some(paused)),
+            paused => {
+                if paused.is_none() {
+                    self.start_attempt();
+                    self.unrepaired_row = None;
+                }
+                let first = self.phase_rounds(false, paused);
+                if self.paused.is_some() {
+                    return Ok(StopReason::Limit);
+                }
+                let first = self.keep_the_better_answer(first);
+                match (first, self.unrepaired_row.take()) {
+                    (Ok(Some(stop)), _) => return Ok(stop),
+                    (Ok(None), _) => debug!(
+                        "verify: no factorization represents the vertex; solving again from the \
+                         slack basis"
+                    ),
+                    (Err(_), Some(row)) => debug!(
+                        "dual simplex: no var can repair row {row}, which proves nothing; solving \
+                         again from the slack basis"
+                    ),
+                    (Err(error), None) => return Err(error),
+                }
+                self.phase_rounds_from_slack_basis()
+            }
+        };
+        if self.paused.is_some() {
+            return Ok(StopReason::Limit);
         }
-        let second = self.phase_rounds_from_slack_basis();
         match self.keep_the_better_answer(second) {
             Ok(Some(stop)) => Ok(stop),
             Ok(None) => Err(Error::InternalError(
@@ -1369,6 +1432,21 @@ impl Solver {
         self.held.clear();
         self.undone = None;
         self.fallback = None;
+    }
+
+    /// Keeps the attempt's place where the pivot limit stopped a phase loop
+    /// ([`Self::paused_phase`]): which attempt, its round and the cleanup flag
+    /// it ran the phase with. Another limit (the deadline) ends the phase, and
+    /// the next call starts the attempt afresh.
+    fn pause(&mut self, from_slack_basis: bool, round: usize, cleanup: bool) {
+        if let Some(phase) = self.paused_phase.take() {
+            self.paused = Some(Paused {
+                from_slack_basis,
+                round,
+                cleanup,
+                phase,
+            });
+        }
     }
 
     /// The outcome of an attempt of [`Self::run_phases`] that went on from
@@ -1502,47 +1580,69 @@ impl Solver {
         self.artificial_obj = None;
         let basis = self.slack_basis();
         self.load_basis(&basis)?;
-        self.phase_rounds()
+        self.phase_rounds(true, None)
     }
 
     /// The rounds of [`Self::run_phases`], or `None` when the verification
-    /// finds that no factorization represents the vertex.
-    fn phase_rounds(&mut self) -> Result<Option<StopReason>, Error> {
-        let mut cleanup = false;
-        for round in 0..MAX_PHASE_ROUNDS {
+    /// finds that no factorization represents the vertex; from where a limit
+    /// stopped them (`paused`), if it did. A limit keeps the attempt's place
+    /// in [`Self::paused`].
+    fn phase_rounds(
+        &mut self,
+        from_slack_basis: bool,
+        paused: Option<Paused>,
+    ) -> Result<Option<StopReason>, Error> {
+        let (first_round, mut cleanup, mut phase) = match paused {
+            Some(paused) => (paused.round, paused.cleanup, Some(paused.phase)),
+            None => (0, false, None),
+        };
+        for round in first_round..MAX_PHASE_ROUNDS {
             let harris_scale = LOOP_HARRIS_REDUCTION.powi(round as i32);
-            if !self.is_primal_feasible {
-                if self.restore_feasibility(cleanup)? == StopReason::Limit {
+            let (dual, primal) = match phase.take() {
+                Some(PausedPhase::Dual(dual)) => (Some(dual), None),
+                Some(PausedPhase::Primal(primal)) => (None, Some(primal)),
+                None => (None, None),
+            };
+            if dual.is_some() || (primal.is_none() && !self.is_primal_feasible) {
+                if self.restore_feasibility_from(cleanup, dual)? == StopReason::Limit {
+                    self.pause(from_slack_basis, round, cleanup);
                     return Ok(Some(StopReason::Limit));
                 }
                 cleanup = cleanup || self.artificial_obj.is_none();
             }
-            match self.verify_primal()? {
-                Verdict::Checked { feasible: true } => {}
-                Verdict::Checked { feasible: false } => {
-                    debug!("phase round {round}: recomputed values violate a bound; continuing");
-                    continue;
+            if primal.is_none() {
+                match self.verify_primal()? {
+                    Verdict::Checked { feasible: true } => {}
+                    Verdict::Checked { feasible: false } => {
+                        debug!(
+                            "phase round {round}: recomputed values violate a bound; continuing"
+                        );
+                        continue;
+                    }
+                    Verdict::Unrepresentable => return Ok(None),
                 }
-                Verdict::Unrepresentable => return Ok(None),
-            }
-            // Dual verification: the reduced costs recomputed on multipliers
-            // refined once. If they still show an infeasibility, let the
-            // primal simplex act on them; no pivot at all means the vertex is
-            // optimal within tolerance.
-            self.artificial_obj = None;
-            self.recalc_obj_coeffs_refined();
-            if self.calc_dual_infeasibility().0 == 0 {
-                if self.refined_first() {
-                    continue;
+                // Dual verification: the reduced costs recomputed on
+                // multipliers refined once. If they still show an
+                // infeasibility, let the primal simplex act on them; no pivot
+                // at all means the vertex is optimal within tolerance.
+                self.artificial_obj = None;
+                self.recalc_obj_coeffs_refined();
+                if self.calc_dual_infeasibility().0 == 0 {
+                    if self.refined_first() {
+                        continue;
+                    }
+                    return Ok(Some(StopReason::Finished));
                 }
-                return Ok(Some(StopReason::Finished));
+                debug!(
+                    "phase round {round}: recomputed reduced costs are dual infeasible; continuing"
+                );
             }
-            debug!("phase round {round}: recomputed reduced costs are dual infeasible; continuing");
-            let (stop, pivoted) = self.optimize(cleanup, harris_scale)?;
-            cleanup = true;
+            let (stop, pivoted) = self.optimize_from(cleanup, harris_scale, primal)?;
             if stop == StopReason::Limit {
+                self.pause(from_slack_basis, round, cleanup);
                 return Ok(Some(StopReason::Limit));
             }
+            cleanup = true;
             if !pivoted {
                 match self.verify_primal()? {
                     Verdict::Checked { feasible: true } => {
@@ -2298,9 +2398,34 @@ impl Solver {
     /// and that return to the true bounds however the phase ends. Returns the
     /// stop reason and whether any pivot was made; ends with
     /// `is_primal_feasible` measured on the true bounds.
+    #[cfg(test)]
     fn optimize(&mut self, cleanup: bool, harris_scale: f64) -> Result<(StopReason, bool), Error> {
-        self.begin_primal_phase(cleanup);
-        let result = self.primal_phase(harris_scale);
+        self.optimize_from(cleanup, harris_scale, None)
+    }
+
+    /// [`Self::optimize`], going on with the loop of a phase a limit stopped
+    /// (`resumed`), whose working bounds are still in force. A limit stops
+    /// the phase with its working bounds in force and its loop in
+    /// [`Self::paused_phase`].
+    fn optimize_from(
+        &mut self,
+        cleanup: bool,
+        harris_scale: f64,
+        resumed: Option<PrimalLoop>,
+    ) -> Result<(StopReason, bool), Error> {
+        let state = resumed.unwrap_or_else(|| {
+            self.begin_primal_phase(cleanup);
+            PrimalLoop {
+                iter: 0,
+                pivoted: false,
+                refreshed_since_step: false,
+                stall_reference: self.cur_obj_val,
+            }
+        });
+        let result = self.primal_phase_from(harris_scale, state);
+        if self.paused_phase.is_some() {
+            return result;
+        }
         let cleanup = self.end_primal_phase();
         let result = result?;
         cleanup?;
@@ -2330,16 +2455,42 @@ impl Solver {
     /// The phase fails loudly rather than run forever: when, after a rebuild,
     /// the only vars left to enter are taboo, and when the objective has not
     /// fallen beyond round-off in [`STALL_ITERATIONS`] iterations.
+    #[cfg(test)]
     fn primal_phase(&mut self, harris_scale: f64) -> Result<(StopReason, bool), Error> {
-        let mut pivoted = false;
-        // Whether the data are fresh from a rebuild with no step since: only
-        // then do taboo vars alone left to enter mean the phase is stuck, and
-        // a ray mean `Unbounded`.
-        let mut refreshed_since_step = false;
-        // The objective at the last stall check.
-        let mut stall_reference = self.cur_obj_val;
-        for iter in 0.. {
+        let state = PrimalLoop {
+            iter: 0,
+            pivoted: false,
+            refreshed_since_step: false,
+            stall_reference: self.cur_obj_val,
+        };
+        self.primal_phase_from(harris_scale, state)
+    }
+
+    /// [`Self::primal_phase`] from the loop state `state`; a limit keeps the
+    /// state, at the iteration it did not run, in [`Self::paused_phase`].
+    fn primal_phase_from(
+        &mut self,
+        harris_scale: f64,
+        state: PrimalLoop,
+    ) -> Result<(StopReason, bool), Error> {
+        // `refreshed_since_step`: whether the data are fresh from a rebuild
+        // with no step since: only then do taboo vars alone left to enter mean
+        // the phase is stuck, and a ray mean `Unbounded`. `stall_reference`:
+        // the objective at the last stall check.
+        let PrimalLoop {
+            iter: first_iter,
+            mut pivoted,
+            mut refreshed_since_step,
+            mut stall_reference,
+        } = state;
+        for iter in first_iter.. {
             if self.pivots_spent() {
+                self.paused_phase = Some(PausedPhase::Primal(PrimalLoop {
+                    iter,
+                    pivoted,
+                    refreshed_since_step,
+                    stall_reference,
+                }));
                 return Ok((StopReason::Limit, pivoted));
             }
             self.lp_iterations += 1;
@@ -2542,10 +2693,29 @@ impl Solver {
     /// optimal or the phase is a `cleanup`, and whose initial dual
     /// infeasibilities it corrects; they return to the costs in force however
     /// the phase ends.
+    #[cfg(test)]
     fn restore_feasibility(&mut self, cleanup: bool) -> Result<StopReason, Error> {
-        let result = self
-            .begin_dual_phase(cleanup)
-            .and_then(|()| self.dual_phase());
+        self.restore_feasibility_from(cleanup, None)
+    }
+
+    /// [`Self::restore_feasibility`], going on with the loop of a phase a
+    /// limit stopped (`resumed`), whose working costs are still in force. A
+    /// limit stops the phase with its working costs in force and its loop in
+    /// [`Self::paused_phase`].
+    fn restore_feasibility_from(
+        &mut self,
+        cleanup: bool,
+        resumed: Option<DualLoop>,
+    ) -> Result<StopReason, Error> {
+        let result = match resumed {
+            Some(state) => self.dual_phase_from(state),
+            None => self
+                .begin_dual_phase(cleanup)
+                .and_then(|()| self.dual_phase()),
+        };
+        if self.paused_phase.is_some() {
+            return result;
+        }
         self.end_dual_phase();
         result
     }
@@ -2588,28 +2758,52 @@ impl Solver {
     /// can give ([`Self::leaving_slack_cut`]), or beyond the values computed
     /// through the basis (see the known limitations in ARCHITECTURE §7.9).
     fn dual_phase(&mut self) -> Result<StopReason, Error> {
+        let state = DualLoop {
+            iter: 0,
+            refreshed_since_pivot: false,
+            stall_reference: self.cur_obj_val,
+            last_resort_row: None,
+            last_resort_tried: None,
+        };
+        self.dual_phase_from(state)
+    }
+
+    /// [`Self::dual_phase`] from the loop state `state`; a limit keeps the
+    /// state, at the iteration it did not run, in [`Self::paused_phase`].
+    fn dual_phase_from(&mut self, state: DualLoop) -> Result<StopReason, Error> {
         let obj_str = if self.artificial_obj.is_some() {
             "artificial obj."
         } else {
             "obj."
         };
 
-        // Whether the data are fresh from a rebuild, with no pivot since: a
-        // row's verdict, or the loud error when only taboo rows are left, is
-        // drawn on fresh data only. Only the unproven row with the best score
-        // gets the last resorts: if they fail on it, the phase fails without
-        // trying another (a loud error where there might have been an answer,
-        // never a wrong answer).
-        let mut refreshed_since_pivot = false;
-        // The dual objective at the last stall check.
-        let mut stall_reference = self.cur_obj_val;
-        // The unproven row the next iteration gives the genuine entries of its
-        // refined row, and the last row given them since the last rebuild.
-        let mut last_resort_row: Option<usize> = None;
-        let mut last_resort_tried: Option<usize> = None;
+        // `refreshed_since_pivot`: whether the data are fresh from a rebuild,
+        // with no pivot since: a row's verdict, or the loud error when only
+        // taboo rows are left, is drawn on fresh data only. Only the unproven
+        // row with the best score gets the last resorts: if they fail on it,
+        // the phase fails without trying another (a loud error where there
+        // might have been an answer, never a wrong answer).
+        // `stall_reference`: the dual objective at the last stall check.
+        // `last_resort_row`, `last_resort_tried`: the unproven row the next
+        // iteration gives the genuine entries of its refined row, and the last
+        // row given them since the last rebuild.
+        let DualLoop {
+            iter: first_iter,
+            mut refreshed_since_pivot,
+            mut stall_reference,
+            mut last_resort_row,
+            mut last_resort_tried,
+        } = state;
 
-        for iter in 0.. {
+        for iter in first_iter.. {
             if self.pivots_spent() {
+                self.paused_phase = Some(PausedPhase::Dual(DualLoop {
+                    iter,
+                    refreshed_since_pivot,
+                    stall_reference,
+                    last_resort_row,
+                    last_resort_tried,
+                }));
                 return Ok(StopReason::Limit);
             }
             self.lp_iterations += 1;
