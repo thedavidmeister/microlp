@@ -5024,11 +5024,14 @@ fn engine_after(p: &Problem, pivots: u64) -> Box<Solver> {
 #[test]
 fn a_resume_goes_on_from_where_the_limit_stopped_it() {
     init();
-    for (p, pivots) in [
+    for ((p, pivots), from_slack_basis) in [
         (dense_lp(30, 20, false), 3),
         (dense_lp(60, 40, true), 1),
         (dense_lp(60, 40, true), 4),
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|case| [(case.clone(), false), (case, true)])
+    {
         let mut sol = engine_after(&p, pivots);
         let mut paused = sol
             .paused
@@ -5048,7 +5051,7 @@ fn a_resume_goes_on_from_where_the_limit_stopped_it() {
                 assert!(sol.costs_modified);
             }
         }
-        paused.from_slack_basis = true;
+        paused.from_slack_basis = from_slack_basis;
         paused.round = 2;
         paused.cleanup = true;
         sol.paused = Some(paused.clone());
@@ -5064,7 +5067,7 @@ fn a_resume_goes_on_from_where_the_limit_stopped_it() {
         let again = sol.paused.clone().expect("still paused");
         assert_eq!(
             (again.from_slack_basis, again.round, again.cleanup),
-            (true, 2, true)
+            (from_slack_basis, 2, true)
         );
         assert_eq!(format!("{:?}", again.phase), format!("{:?}", paused.phase));
         assert!(sol.fallback.is_some());
