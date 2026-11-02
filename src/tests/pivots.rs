@@ -333,3 +333,53 @@ fn a_failed_resume_reports_the_pivots_it_made() {
         assert_eq!(pivots, whole, "at {limit} pivots a call");
     }
 }
+
+/// x + y over integers in 0..=5 with 2x + 2y = 3: its relaxation is met at x + y = 1.5, which
+/// no integer pair reaches, so only a search proves it infeasible.
+fn odd() -> Problem {
+    let mut p = Problem::new(OptimizationDirection::Maximize);
+    let x = p.add_integer_var(1.0, (0, 5));
+    let y = p.add_integer_var(1.0, (0, 5));
+    p.add_constraint([(x, 2.0), (y, 2.0)], ComparisonOp::Eq, 3.0);
+    p
+}
+
+#[test]
+fn a_failed_search_reports_the_pivots_it_made() {
+    let options = SolveOptions {
+        presolve: false,
+        ..SolveOptions::default()
+    };
+    let (error, stats) = odd().solve_with_stats(options.clone()).unwrap_err();
+    assert_eq!(error, Error::Infeasible);
+    // the relaxation leaves the slack basis to meet the row
+    assert!(stats.lp_iterations > 0, "{stats:?}");
+    assert!(stats.nodes_solved > 0, "{stats:?}");
+    // stopped after the root and resumed, the search fails having made the same pivots
+    let root = odd()
+        .solve_with(SolveOptions {
+            node_limit: Some(1),
+            ..options
+        })
+        .unwrap();
+    assert!(!root.is_optimal());
+    let (resumed_error, resumed) = root
+        .resume_with_stats(ResumeOptions::default())
+        .unwrap_err();
+    assert_eq!(resumed_error, Error::Infeasible);
+    assert_eq!(resumed.lp_iterations, stats.lp_iterations, "{resumed:?}");
+}
+
+#[test]
+fn invalid_resume_options_keep_the_stats_so_far() {
+    let p = dense(30, 20);
+    let outcome = p.solve_with(options(Some(3))).unwrap();
+    assert_eq!(outcome.stats().lp_iterations, 3);
+    let invalid = ResumeOptions {
+        mip_gap: Some(f64::NAN),
+        ..ResumeOptions::default()
+    };
+    let (error, stats) = outcome.resume_with_stats(invalid).unwrap_err();
+    assert!(matches!(error, Error::InvalidOptions(_)), "{error:?}");
+    assert_eq!(stats.lp_iterations, 3);
+}
