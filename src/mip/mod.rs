@@ -145,9 +145,32 @@ fn resume_or_classify(state: &mut MipState) -> Result<TerminationReason, Error> 
 
 /// Build the search state for `problem` and run it under `options`.
 pub(crate) fn run(problem: &Problem, options: SolveOptions) -> Result<MipRun, Error> {
-    let mut state = build_state(problem, options)?;
-    let reason = resume_or_classify(&mut state)?;
-    Ok(MipRun { reason, state })
+    run_counted(problem, options).map_err(|(e, _)| e)
+}
+
+/// [`run`], an error with the statistics of the search up to it.
+pub(crate) fn run_counted(
+    problem: &Problem,
+    options: SolveOptions,
+) -> Result<MipRun, (Error, Stats)> {
+    let started = Instant::now();
+    let mut state = build_state(problem, options).map_err(|e| {
+        let stats = Stats {
+            elapsed: started.elapsed(),
+            ..Stats::default()
+        };
+        (e, stats)
+    })?;
+    match resume_or_classify(&mut state) {
+        Ok(reason) => Ok(MipRun { reason, state }),
+        Err(e) => {
+            let stats = Stats {
+                lp_iterations: state.solver.lp_iterations,
+                ..state.stats
+            };
+            Err((e, stats))
+        }
+    }
 }
 
 /// `base` with the fix_var overlay applied to the variable bounds.

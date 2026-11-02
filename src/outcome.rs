@@ -51,15 +51,27 @@ impl SolveOutcome {
         direction: OptimizationDirection,
         num_vars: usize,
         stop: StopReason,
-        mut solver: Box<Solver>,
+        solver: Box<Solver>,
         last_options: ResumeOptions,
     ) -> Result<Self, Error> {
+        Self::from_lp_stop_counted(direction, num_vars, stop, solver, last_options)
+            .map_err(|(e, _)| e)
+    }
+
+    /// [`SolveOutcome::from_lp_stop`], an error with the statistics of the solve up to it.
+    pub(crate) fn from_lp_stop_counted(
+        direction: OptimizationDirection,
+        num_vars: usize,
+        stop: StopReason,
+        mut solver: Box<Solver>,
+        last_options: ResumeOptions,
+    ) -> Result<Self, (Error, Stats)> {
         let stop = match stop {
             StopReason::Finished => {
                 let started = Instant::now();
                 let held = solver.hold_validation_rows();
                 solver.elapsed += started.elapsed();
-                held?
+                held.map_err(|e| (e, lp_stats(&solver)))?
             }
             StopReason::Limit => StopReason::Limit,
         };
@@ -67,25 +79,26 @@ impl SolveOutcome {
             StopReason::Finished => {
                 let lp_values = solver.reported_values();
                 let lp_objective = solver.objective_of(&lp_values);
+                let failed = |e| (e, lp_stats(&solver));
                 if let Some((var, violation)) = solver.first_violated_bound(&lp_values) {
-                    return Err(Error::InternalError(format!(
+                    return Err(failed(Error::InternalError(format!(
                         "LP solution violates the bounds of variable {var} by {violation:e}"
-                    )));
+                    ))));
                 }
                 if let Some((row, violation)) = solver.first_violated_row(&lp_values) {
-                    return Err(Error::InternalError(format!(
+                    return Err(failed(Error::InternalError(format!(
                         "LP solution violates engine row {row} by {violation:e} (the engine's \
                          numbering, not the problem's: it leaves out the rows every point \
                          satisfies, empty or with an infinite right-hand side on their open \
                          side, and numbers the rows presolve took out last)"
-                    )));
+                    ))));
                 }
                 if !lp_objective.is_finite() {
-                    return Err(Error::InternalError(
+                    return Err(failed(Error::InternalError(
                         "the objective of the LP solution cannot be evaluated in f64: its \
                          terms (costs times values) or their sum overflow"
                             .to_string(),
-                    ));
+                    )));
                 }
                 Ok(Self::Solution(Solution {
                     direction,
@@ -267,7 +280,19 @@ impl SolveOutcome {
     /// outside its accepted range, and otherwise the errors of
     /// [`SolveOutcome::resume`].
     pub fn resume_with(self, options: ResumeOptions) -> Result<Self, Error> {
-        options.validate()?;
+        self.resume_with_stats(options).map_err(|(e, _)| e)
+    }
+
+    /// [`SolveOutcome::resume_with`], an error with the statistics of the solve up to it, the
+    /// pivots of the failed call among them.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`SolveOutcome::resume_with`].
+    pub fn resume_with_stats(self, options: ResumeOptions) -> Result<Self, (Error, Stats)> {
+        if let Err(e) = options.validate() {
+            return Err((e, self.stats()));
+        }
         if self.is_optimal() {
             return Ok(self);
         }
@@ -276,12 +301,12 @@ impl SolveOutcome {
             Self::Interrupted(interrupted) => interrupted.state.coefficient_range(),
         };
         self.resume_validated(options)
-            .map_err(|error| range.annotate(error))
+            .map_err(|(error, stats)| (range.annotate(error), stats))
     }
 
     /// [`SolveOutcome::resume_with`] of an outcome that is not optimal, with
     /// validated `options`.
-    fn resume_validated(self, options: ResumeOptions) -> Result<Self, Error> {
+    fn resume_validated(self, options: ResumeOptions) -> Result<Self, (Error, Stats)> {
         let (direction, num_vars, state) = match self {
             Self::Solution(solution) => {
                 debug_assert_eq!(solution.status, SolutionStatus::Feasible);
@@ -297,17 +322,22 @@ impl SolveOutcome {
             SolveState::Lp(mut solver) => {
                 solver.operation_time_limit = options.time_limit;
                 solver.operation_pivot_limit = options.pivot_limit;
-                let stop = timed_lp_call(&mut solver, options.time_limit, Solver::initial_solve)?;
-                Self::from_lp_stop(direction, num_vars, stop, solver, options)
+                let stop = timed_lp_call(&mut solver, options.time_limit, Solver::initial_solve)
+                    .map_err(|e| (e, lp_stats(&solver)))?;
+                Self::from_lp_stop_counted(direction, num_vars, stop, solver, options)
             }
             SolveState::Mip(mut state) => {
                 if options.pivot_limit.is_some() {
-                    return Err(Error::InvalidOptions(
-                        "invalid ResumeOptions.pivot_limit: a problem with integer variables takes a node_limit"
-                            .to_string(),
+                    return Err((
+                        Error::InvalidOptions(
+                            "invalid ResumeOptions.pivot_limit: a problem with integer variables takes a node_limit"
+                                .to_string(),
+                        ),
+                        state.stats,
                     ));
                 }
-                let reason = mip::resume_run(&mut state, options.clone())?;
+                let reason =
+                    mip::resume_run(&mut state, options.clone()).map_err(|e| (e, state.stats))?;
                 Ok(Self::from_mip_run(
                     direction,
                     num_vars,
@@ -319,6 +349,15 @@ impl SolveOutcome {
                 ))
             }
         }
+    }
+}
+
+/// The statistics of a pure-LP solve so far.
+pub(crate) fn lp_stats(solver: &Solver) -> Stats {
+    Stats {
+        lp_iterations: solver.lp_iterations,
+        elapsed: solver.elapsed,
+        ..Stats::default()
     }
 }
 
@@ -357,11 +396,7 @@ impl InterruptedSolve {
     /// Returns statistics accumulated before the interruption.
     pub fn stats(&self) -> Stats {
         match &self.state {
-            SolveState::Lp(solver) => Stats {
-                lp_iterations: solver.lp_iterations,
-                elapsed: solver.elapsed,
-                ..Stats::default()
-            },
+            SolveState::Lp(solver) => lp_stats(solver),
             SolveState::Mip(state) => state.stats,
         }
     }

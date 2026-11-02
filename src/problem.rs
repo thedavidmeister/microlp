@@ -8,7 +8,7 @@ use crate::range::CoefficientRange;
 use crate::solver::{deadline_after, valid_rhs, Solver};
 use crate::{
     mip, presolve, ComparisonOp, CsVec, Error, LinearExpr, OptimizationDirection, ResumeOptions,
-    SolveOptions, SolveOutcome, Variable,
+    SolveOptions, SolveOutcome, Stats, Variable,
 };
 
 /// A linear optimization model that can be populated and solved.
@@ -323,35 +323,49 @@ impl Problem {
     /// added). See [`Problem::solve`] for errors that can be reported while
     /// solving.
     pub fn solve_with(&self, options: SolveOptions) -> Result<SolveOutcome, Error> {
-        options.validate()?;
-        self.validate()?;
+        self.solve_with_stats(options).map_err(|(e, _)| e)
+    }
+
+    /// [`Problem::solve_with`], an error with the statistics of the solve up to it, the pivots
+    /// it made among them.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Problem::solve_with`].
+    pub fn solve_with_stats(&self, options: SolveOptions) -> Result<SolveOutcome, (Error, Stats)> {
+        let unsolved = |e| (e, Stats::default());
+        options.validate().map_err(unsolved)?;
+        self.validate().map_err(unsolved)?;
         if let Some(hint) = &options.warm_start {
-            self.validate_hint(hint)?;
+            self.validate_hint(hint).map_err(unsolved)?;
         }
         if let Some(basis) = &options.basis {
-            self.validate_basis(basis)?;
+            self.validate_basis(basis).map_err(unsolved)?;
         }
         let range = CoefficientRange::of(&self.constraints);
         self.solve_validated(options, &range)
-            .map_err(|error| range.annotate(error))
+            .map_err(|(error, stats)| (range.annotate(error), stats))
     }
 
-    /// [`Problem::solve_with`] once the options and the model are validated;
+    /// [`Problem::solve_with_stats`] once the options and the model are validated;
     /// `range` is this problem's ([`CoefficientRange`]).
     fn solve_validated(
         &self,
         options: SolveOptions,
         range: &CoefficientRange,
-    ) -> Result<SolveOutcome, Error> {
+    ) -> Result<SolveOutcome, (Error, Stats)> {
         let num_vars = self.obj_coeffs.len();
         if self.has_integer_vars() {
             if options.pivot_limit.is_some() {
-                return Err(Error::InvalidOptions(
-                    "invalid SolveOptions.pivot_limit: a problem with integer variables takes a node_limit"
-                        .to_string(),
+                return Err((
+                    Error::InvalidOptions(
+                        "invalid SolveOptions.pivot_limit: a problem with integer variables takes a node_limit"
+                            .to_string(),
+                    ),
+                    Stats::default(),
                 ));
             }
-            let run = mip::run(self, options.clone())?;
+            let run = mip::run_counted(self, options.clone())?;
             let resume_options = ResumeOptions::from(&options);
             Ok(SolveOutcome::from_mip_run(
                 self.direction,
@@ -362,6 +376,14 @@ impl Problem {
         } else {
             let started = Instant::now();
             let deadline = deadline_after(started, options.time_limit);
+            // nothing pivoted before the engine exists
+            let unbuilt = |e| {
+                let stats = Stats {
+                    elapsed: started.elapsed(),
+                    ..Stats::default()
+                };
+                (e, stats)
+            };
             // Lp mode applies only feasible-set-exact reductions, so the live
             // solver stays sound under every later Solution edit.
             // a basis names the model's own vars and rows, which presolve
@@ -377,7 +399,8 @@ impl Problem {
                     options.tolerances.feasibility,
                     options.int_tol,
                     false,
-                ))?
+                ))
+                .map_err(unbuilt)?
             } else {
                 None
             };
@@ -397,7 +420,8 @@ impl Problem {
                 &self.var_domains,
                 deadline,
                 options.tolerances.feasibility,
-            )?;
+            )
+            .map_err(unbuilt)?;
             // The engine also holds the answer to the rows presolve dropped or
             // rewrote, as written, here and on every later edit or resume.
             if let Some(presolved) = presolved {
@@ -408,13 +432,17 @@ impl Problem {
             solver.operation_time_limit = options.time_limit;
             solver.operation_pivot_limit = options.pivot_limit;
             solver.start_pivot_budget();
-            if let Some(basis) = &options.basis {
-                solver.load_basis(&crate::solver::Basis(basis.statuses.clone()))?;
-            }
-            let stop = solver.initial_solve()?;
+            let stop = options
+                .basis
+                .as_ref()
+                .map_or(Ok(()), |basis| {
+                    solver.load_basis(&crate::solver::Basis(basis.statuses.clone()))
+                })
+                .and_then(|()| solver.initial_solve());
             solver.elapsed += started.elapsed();
+            let stop = stop.map_err(|e| (e, crate::outcome::lp_stats(&solver)))?;
             let resume_options = ResumeOptions::from(&options);
-            SolveOutcome::from_lp_stop(
+            SolveOutcome::from_lp_stop_counted(
                 self.direction,
                 num_vars,
                 stop,

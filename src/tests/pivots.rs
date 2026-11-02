@@ -288,3 +288,48 @@ fn an_incumbent_meets_the_rows_and_is_its_objective() {
     }
     assert_eq!(outcome.into_solution().unwrap().objective(), 12.0);
 }
+
+/// `dense` with a row its others keep it from meeting: infeasible, and proved so only by
+/// pivoting from the origin.
+fn unreachable(n: usize, m: usize) -> Problem {
+    let mut p = dense(n, m);
+    // each row holds the sum of the variables below its right-hand side over its least
+    // coefficient, at most 97 * 1000 / 1
+    p.add_constraint((0..n).map(|i| (Variable(i), 1.0)), ComparisonOp::Ge, 1e6);
+    p
+}
+
+/// The error `p` fails with and the pivots it took, solved `first` pivots and resumed `each` a
+/// call.
+fn failed(p: &Problem, first: u64, each: Option<u64>) -> (Error, u64) {
+    let mut outcome = match p.solve_with_stats(unpresolved(Some(first))) {
+        Ok(outcome) => outcome,
+        Err((e, stats)) => return (e, stats.lp_iterations),
+    };
+    loop {
+        let resume = ResumeOptions {
+            pivot_limit: each,
+            ..ResumeOptions::default()
+        };
+        match outcome.resume_with_stats(resume) {
+            Ok(next) => outcome = next,
+            Err((e, stats)) => return (e, stats.lp_iterations),
+        }
+    }
+}
+
+#[test]
+fn a_failed_resume_reports_the_pivots_it_made() {
+    let p = unreachable(30, 20);
+    let (whole_error, whole) = match p.solve_with_stats(unpresolved(None)) {
+        Err((e, stats)) => (e, stats.lp_iterations),
+        Ok(_) => panic!("solved an infeasible problem"),
+    };
+    assert_eq!(whole_error, Error::Infeasible);
+    assert!(whole > 0, "{whole} pivots");
+    for limit in [1, 2, 3, 20] {
+        let (error, pivots) = failed(&p, limit, Some(limit));
+        assert_eq!(error, Error::Infeasible, "at {limit} pivots a call");
+        assert_eq!(pivots, whole, "at {limit} pivots a call");
+    }
+}
