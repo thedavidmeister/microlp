@@ -1233,6 +1233,93 @@ impl Solver {
             .sum()
     }
 
+    /// The point of the basis the solve stands at, with its non-basic vars on
+    /// the model's bounds (a running phase may hold them at perturbed ones)
+    /// and its basic vars solved from the rows, in user units, and its
+    /// objective (internal minimize space), where it meets the model's rows
+    /// and bounds to the contract a finished solve's answer is held to.
+    pub(crate) fn feasible_point(&mut self) -> Option<(Vec<f64>, f64)> {
+        let mut x: Vec<f64> = (0..self.num_total_vars())
+            .map(|var| self.internal_value(var))
+            .collect();
+        for &var in &self.nb_vars {
+            let (min, max) = self.model_bounds(var);
+            x[var] = x[var].clamp(min, max);
+        }
+        let mut residuals: Vec<f64> = (0..self.num_constraints())
+            .map(|r| {
+                //guaranteed to be a valid index
+                let row = self.orig_constraints.outer_view(r).unwrap();
+                let terms = row.iter().map(|(v, &coeff)| (coeff, x[v]));
+                implied_slack(self.orig_rhs[r], terms).0
+            })
+            .collect();
+        self.basis_solver.solve_dense_with_etas(&mut residuals);
+        for (&var, delta) in self.basic_vars.iter().zip(&residuals) {
+            x[var] += delta;
+        }
+        let values: Vec<f64> = (0..self.num_vars)
+            .map(|v| x[v] * self.col_scale(v))
+            .collect();
+        if self.first_violated_bound(&values).is_some()
+            || self.first_violated_row(&values).is_some()
+        {
+            return None;
+        }
+        let objective = self.objective_of(&values);
+        objective.is_finite().then_some((values, objective))
+    }
+
+    /// A lower bound on the objective (internal minimize space) of every point
+    /// of the model's rows and bounds: the Lagrangian bound of the current
+    /// basis's multipliers on the model's costs. Each row is `a x + s = rhs`,
+    /// so for any multipliers `y` and any such point, `c x = y rhs + Σ_j d_j
+    /// x_j` with `d_j = c_j - y a_j` over every var, slacks included; each
+    /// term is least at a bound, and the bound `-∞` where that is infinite or
+    /// a number is not one. Weak duality makes
+    /// it a bound for any `y`; at an optimal basis it is the optimum, to
+    /// round-off.
+    pub(crate) fn lower_bound(&mut self) -> f64 {
+        let mut y: Vec<f64> = self
+            .basic_vars
+            .iter()
+            .map(|&var| self.orig_obj_coeffs[var])
+            .collect();
+        self.basis_solver.solve_transp_dense_with_etas(&mut y);
+        let mut bound = CDouble::from(0.0);
+        for (r, &rhs) in self.orig_rhs.iter().enumerate() {
+            bound.add_product(y[r], rhs);
+        }
+        for var in 0..self.num_total_vars() {
+            let mut d = CDouble::from(self.orig_obj_coeffs[var]);
+            //guaranteed to be a valid index
+            for (r, &coeff) in self.orig_constraints_csc.outer_view(var).unwrap().iter() {
+                d.add_product(-coeff, y[r]);
+            }
+            let d = d.value();
+            let (min, max) = self.model_bounds(var);
+            let least = if d.is_nan() {
+                f64::NAN
+            } else if d > 0.0 {
+                d * min
+            } else if d < 0.0 {
+                d * max
+            } else {
+                continue;
+            };
+            if !least.is_finite() {
+                return f64::NEG_INFINITY;
+            }
+            bound.add(least);
+        }
+        let bound = bound.value();
+        if bound.is_nan() {
+            f64::NEG_INFINITY
+        } else {
+            bound
+        }
+    }
+
     /// A var's bounds in the model, in user units.
     pub(crate) fn get_var_bounds(&self, var: usize) -> (f64, f64) {
         let s = self.col_scale(var);

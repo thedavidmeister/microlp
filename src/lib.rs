@@ -185,7 +185,7 @@ pub use basis::{Basis, BasisStatus};
 pub use error::Error;
 pub use expr::{ComparisonOp, LinearExpr, LinearTerm, OptimizationDirection, Variable};
 pub use mip::{ResumeOptions, SolutionStatus, SolveOptions, Stats, TerminationReason, Tolerances};
-pub use outcome::{InterruptedSolve, SolveOutcome};
+pub use outcome::{Incumbent, InterruptedSolve, SolveOutcome};
 pub use problem::{Problem, VarDomain};
 pub use solution::{Solution, SolutionIter};
 

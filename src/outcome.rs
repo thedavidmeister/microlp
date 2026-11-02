@@ -5,7 +5,7 @@ use crate::clock::Instant;
 use crate::solver::Solver;
 use crate::{
     mip, timed_lp_call, Error, OptimizationDirection, ResumeOptions, Solution, SolutionStatus,
-    SolveState, Stats, StopReason, TerminationReason,
+    SolveState, Stats, StopReason, TerminationReason, Variable,
 };
 
 /// The result of a successful solve.
@@ -370,5 +370,65 @@ impl InterruptedSolve {
     /// post-solve edit call.
     pub fn last_resume_options(&self) -> ResumeOptions {
         self.last_options.clone()
+    }
+
+    /// The point an interrupted pure-LP solve stands at, where it meets the
+    /// problem's rows and bounds to the contract a [`Solution`] is held to:
+    /// a feasible point no better than the optimum, which a resume only
+    /// improves on while it stays feasible. `None` where it does not meet
+    /// them, or for a problem with integer variables.
+    pub fn incumbent(&mut self) -> Option<Incumbent> {
+        let SolveState::Lp(solver) = &mut self.state else {
+            return None;
+        };
+        let (values, internal) = solver.feasible_point()?;
+        Some(Incumbent {
+            values,
+            objective: user_objective(self.direction, internal),
+        })
+    }
+
+    /// A bound on the optimum of an interrupted pure-LP solve, from the
+    /// multipliers of the basis it stands at: no point of the problem's rows
+    /// and bounds has an objective beyond it (below it when minimizing, above
+    /// it when maximizing), to round-off. It is infinite where the
+    /// multipliers bound nothing. `None` for a problem with integer
+    /// variables.
+    pub fn bound(&mut self) -> Option<f64> {
+        let SolveState::Lp(solver) = &mut self.state else {
+            return None;
+        };
+        Some(user_objective(self.direction, solver.lower_bound()))
+    }
+}
+
+/// A feasible point of an interrupted solve ([`InterruptedSolve::incumbent`]).
+#[derive(Clone, Debug)]
+pub struct Incumbent {
+    values: Vec<f64>,
+    objective: f64,
+}
+
+impl Incumbent {
+    /// The point's objective, in the problem's direction.
+    pub fn objective(&self) -> f64 {
+        self.objective
+    }
+
+    /// A variable's value at the point.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `var` is out of range for this problem.
+    pub fn var_value(&self, var: Variable) -> f64 {
+        self.values[var.0]
+    }
+}
+
+/// An internal (minimize-space) objective in the problem's direction.
+fn user_objective(direction: OptimizationDirection, internal: f64) -> f64 {
+    match direction {
+        OptimizationDirection::Minimize => internal,
+        OptimizationDirection::Maximize => -internal,
     }
 }
