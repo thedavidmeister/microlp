@@ -6,7 +6,10 @@
 //! bounds and integrality are re-checked against the shadow `ModelSpec`.
 
 use crate::model::{Domain, Expected, ModelSpec};
-use microlp::{ComparisonOp, Error, Solution, SolutionStatus, SolveOutcome};
+use microlp::{
+    ComparisonOp, Error, OptimizationDirection, Problem, ResumeOptions, Solution, SolutionStatus,
+    SolveOptions, SolveOutcome,
+};
 
 /// Feasibility slack: a constraint `lhs (op) rhs` is accepted when violated by
 /// no more than `FEAS_ABS * (1 + |rhs|)`, which scales gracefully for the
@@ -192,5 +195,71 @@ fn validate_solution(spec: &ModelSpec, values: &[f64], reported_obj: f64) -> Res
         ));
     }
 
+    Ok(())
+}
+
+/// Calls a sliced solve is held to: the pivot limit of each is the whole solve's pivots over
+/// this, so it stops and resumes about this often.
+const SLICES: u64 = 200;
+
+/// `problem`, a pure LP whose whole solve is `whole`, solved again a few pivots at a time: it
+/// must make the whole solve's pivots and end at its objective, every pivot a call makes kept.
+/// At each stop, the bound must not beat the optimum, and an incumbent must be a feasible point
+/// of the shadow model no better than the optimum.
+pub fn check_sliced(spec: &ModelSpec, problem: &Problem, whole: &Solution) -> Result<(), String> {
+    let pivots = whole.stats().lp_iterations;
+    let limit = (pivots / SLICES).max(1);
+    let optimum = whole.objective();
+    let tol = 1e-6 * (1.0 + optimum.abs());
+    let no_better = |a: f64, b: f64| match spec.direction {
+        OptimizationDirection::Maximize => a <= b + tol,
+        OptimizationDirection::Minimize => a >= b - tol,
+    };
+    let mut options = SolveOptions::default();
+    options.pivot_limit = Some(limit);
+    let mut resume = ResumeOptions::default();
+    resume.pivot_limit = Some(limit);
+    let mut outcome = problem
+        .solve_with(options)
+        .map_err(|e| format!("sliced: {e:?}"))?;
+    let mut calls = 1;
+    while let SolveOutcome::Interrupted(mut going) = outcome {
+        if calls > pivots / limit + 2 {
+            return Err(format!(
+                "sliced: {calls} calls of {limit} for {pivots} pivots"
+            ));
+        }
+        let bound = going.bound().ok_or("sliced: no bound")?;
+        if !no_better(optimum, bound) {
+            return Err(format!("sliced: bound {bound} beats the optimum {optimum}"));
+        }
+        if let Some(incumbent) = going.incumbent() {
+            validate_solution(spec, incumbent.values(), incumbent.objective())
+                .map_err(|e| format!("sliced: incumbent: {e}"))?;
+            if !no_better(incumbent.objective(), optimum) {
+                return Err(format!(
+                    "sliced: incumbent {} beats the optimum {optimum}",
+                    incumbent.objective()
+                ));
+            }
+        }
+        outcome = SolveOutcome::Interrupted(going)
+            .resume_with(resume.clone())
+            .map_err(|e| format!("sliced: {e:?}"))?;
+        calls += 1;
+    }
+    let sliced = require_solution(outcome, "sliced")?;
+    if sliced.stats().lp_iterations != pivots {
+        return Err(format!(
+            "sliced: {} pivots at {limit} a call, {pivots} whole",
+            sliced.stats().lp_iterations
+        ));
+    }
+    if sliced.objective() != optimum {
+        return Err(format!(
+            "sliced: objective {} for {optimum}",
+            sliced.objective()
+        ));
+    }
     Ok(())
 }

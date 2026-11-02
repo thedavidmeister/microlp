@@ -30,6 +30,7 @@ mod rng;
 mod verify;
 
 use cases::{Case, CaseRun, Tier};
+use microlp::{SolutionStatus, SolveOutcome};
 use model::Expected;
 use std::io::Write;
 use std::panic::AssertUnwindSafe;
@@ -535,6 +536,16 @@ fn run_case(case: &Case, timeout_scale: f64, max_case_seconds: Option<f64>) -> S
                 };
                 problem.set_time_limit(budget);
                 let solve_result = problem.solve();
+                // a pure LP solved whole is solved again in slices, to the same pivots and answer
+                let sliced = match &solve_result {
+                    Ok(SolveOutcome::Solution(sol))
+                        if !problem.has_integer_vars()
+                            && sol.status() == SolutionStatus::Optimal =>
+                    {
+                        verify::check_sliced(&spec, &problem, sol).err()
+                    }
+                    _ => None,
+                };
                 let details = match (&solve_result, &expected) {
                     (Ok(outcome), Expected::Objective { value, .. }) => {
                         outcome.solution().map(|sol| SolveDetails {
@@ -545,7 +556,10 @@ fn run_case(case: &Case, timeout_scale: f64, max_case_seconds: Option<f64>) -> S
                     _ => None,
                 };
                 match verify::check(&spec, &expected, solve_result) {
-                    verify::Outcome::Pass => Status::Pass(details),
+                    verify::Outcome::Pass => match sliced {
+                        Some(msg) => Status::Fail(msg),
+                        None => Status::Pass(details),
+                    },
                     verify::Outcome::Fail(msg) => Status::Fail(msg),
                     verify::Outcome::Timeout => Status::Timeout,
                 }

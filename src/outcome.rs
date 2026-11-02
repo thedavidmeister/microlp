@@ -423,6 +423,11 @@ impl Incumbent {
     pub fn var_value(&self, var: Variable) -> f64 {
         self.values[var.0]
     }
+
+    /// Every variable's value at the point, in creation order.
+    pub fn values(&self) -> &[f64] {
+        &self.values
+    }
 }
 
 /// An internal (minimize-space) objective in the problem's direction.

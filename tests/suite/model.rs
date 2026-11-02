@@ -30,6 +30,7 @@ pub struct ConstraintSpec {
 
 #[derive(Clone)]
 pub struct ModelSpec {
+    pub direction: OptimizationDirection,
     pub vars: Vec<VarSpec>,
     pub constraints: Vec<ConstraintSpec>,
 }
@@ -46,6 +47,7 @@ impl Builder {
         Builder {
             problem: Problem::new(direction),
             spec: ModelSpec {
+                direction,
                 vars: vec![],
                 constraints: vec![],
             },
