@@ -985,7 +985,11 @@ fn the_slack_basis_restart_starts_from_the_models_bounds_with_no_absorption_spen
 
     let planted = chain_beside_a_cover_and_two_equalities(true);
     let mut first = planted.clone();
-    assert_eq!(first.phase_rounds(false, None).unwrap(), None, "fixture: the restart");
+    assert_eq!(
+        first.phase_rounds(false, None).unwrap(),
+        None,
+        "fixture: the restart"
+    );
     assert!(
         !first.absorbed.is_empty() && sides(&first) != sides(&fresh),
         "fixture: the first attempt absorbs {:?} and widens {:?}, a solve from the slack basis \
@@ -1069,7 +1073,10 @@ fn refined_values_missing_only_held_bounds_do_not_go_on() {
     init();
     let mut sol = vertex_whose_exact_values_miss_a_bound();
     sol.held.push((3, true));
-    assert_eq!(sol.phase_rounds(false, None).unwrap(), Some(StopReason::Finished));
+    assert_eq!(
+        sol.phase_rounds(false, None).unwrap(),
+        Some(StopReason::Finished)
+    );
     assert!(
         (sol.cur_obj_val + 1.4288401582615).abs() < 1e-9,
         "{}",
@@ -1088,7 +1095,10 @@ fn refined_values_missing_only_held_bounds_do_not_go_on() {
 fn an_excursion_that_fails_returns_to_the_answer_it_left() {
     init();
     let mut sol = vertex_whose_exact_values_miss_a_bound();
-    assert_eq!(sol.phase_rounds(false, None).unwrap(), Some(StopReason::Finished));
+    assert_eq!(
+        sol.phase_rounds(false, None).unwrap(),
+        Some(StopReason::Finished)
+    );
     let answer = sol
         .fallback
         .as_ref()
@@ -1121,7 +1131,10 @@ fn an_excursion_that_fails_returns_to_the_answer_it_left() {
 /// of the answer it left, `-1.4288`.
 fn after_an_excursion() -> (Solver, f64) {
     let mut sol = vertex_whose_exact_values_miss_a_bound();
-    assert_eq!(sol.phase_rounds(false, None).unwrap(), Some(StopReason::Finished));
+    assert_eq!(
+        sol.phase_rounds(false, None).unwrap(),
+        Some(StopReason::Finished)
+    );
     let answer = sol
         .fallback
         .as_ref()

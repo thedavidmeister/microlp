@@ -148,7 +148,12 @@ fn sliced(p: &Problem, limit: u64, max_calls: u64) -> (u64, u64, SolveOutcome) {
 
 #[test]
 fn a_sliced_solve_makes_the_pivots_of_the_whole_one() {
-    for p in [dense(30, 20), dense(60, 40), covering(30, 20), covering(60, 40)] {
+    for p in [
+        dense(30, 20),
+        dense(60, 40),
+        covering(30, 20),
+        covering(60, 40),
+    ] {
         let whole = p.solve_with(options(None)).unwrap();
         let pivots = whole.stats().lp_iterations;
         let whole = whole.into_solution().unwrap();
@@ -156,9 +161,17 @@ fn a_sliced_solve_makes_the_pivots_of_the_whole_one() {
             let (calls, spent, outcome) = sliced(&p, limit, 10 * pivots + 10);
             // every call keeps its pivots: the same pivots as the whole solve, `limit` a call
             assert_eq!(spent, pivots, "at {limit} pivots a call");
-            assert_eq!(calls, pivots.div_ceil(limit).max(1), "at {limit} pivots a call");
+            assert_eq!(
+                calls,
+                pivots.div_ceil(limit).max(1),
+                "at {limit} pivots a call"
+            );
             let sliced = outcome.into_solution().unwrap();
-            assert_eq!(sliced.objective(), whole.objective(), "at {limit} pivots a call");
+            assert_eq!(
+                sliced.objective(),
+                whole.objective(),
+                "at {limit} pivots a call"
+            );
         }
     }
 }
@@ -183,10 +196,17 @@ fn an_interrupted_solve_brackets_the_optimum() {
         let mut incumbents = 0;
         while let SolveOutcome::Interrupted(mut interrupted) = outcome {
             let bound = interrupted.bound().unwrap();
-            assert!(no_better(optimum, bound), "bound {bound}, optimum {optimum}");
+            assert!(
+                no_better(optimum, bound),
+                "bound {bound}, optimum {optimum}"
+            );
             if let Some(incumbent) = interrupted.incumbent() {
                 incumbents += 1;
-                assert!(no_better(incumbent.objective(), optimum), "{}", incumbent.objective());
+                assert!(
+                    no_better(incumbent.objective(), optimum),
+                    "{}",
+                    incumbent.objective()
+                );
             }
             outcome = SolveOutcome::Interrupted(interrupted).resume().unwrap();
         }
@@ -197,13 +217,13 @@ fn an_interrupted_solve_brackets_the_optimum() {
     }
 }
 
-
 #[test]
 fn an_infeasible_point_is_no_incumbent() {
     let mut p = Problem::new(OptimizationDirection::Minimize);
     let x = p.add_var(1.0, (0.0, 10.0));
     p.add_constraint([(x, 1.0)], ComparisonOp::Ge, 2.0);
-    let SolveOutcome::Interrupted(mut at_origin) = p.solve_with(unpresolved(Some(0))).unwrap() else {
+    let SolveOutcome::Interrupted(mut at_origin) = p.solve_with(unpresolved(Some(0))).unwrap()
+    else {
         panic!("no pivots stops before the first");
     };
     // x = 0 misses x >= 2
@@ -248,8 +268,14 @@ fn an_incumbent_meets_the_rows_and_is_its_objective() {
         assert!(interrupted.bound().unwrap() >= 12.0 - 1e-9);
         if let Some(incumbent) = interrupted.incumbent() {
             let (vx, vy) = (incumbent.var_value(x), incumbent.var_value(y));
-            assert!(vx + vy <= 4.0 + 1e-9 && vx + 3.0 * vy <= 6.0 + 1e-9, "({vx}, {vy})");
-            assert!((0.0..=10.0).contains(&vx) && (0.0..=10.0).contains(&vy), "({vx}, {vy})");
+            assert!(
+                vx + vy <= 4.0 + 1e-9 && vx + 3.0 * vy <= 6.0 + 1e-9,
+                "({vx}, {vy})"
+            );
+            assert!(
+                (0.0..=10.0).contains(&vx) && (0.0..=10.0).contains(&vy),
+                "({vx}, {vy})"
+            );
             assert_eq!(incumbent.objective(), 3.0 * vx + 2.0 * vy);
             assert!(incumbent.objective() <= 12.0 + 1e-9);
         }
