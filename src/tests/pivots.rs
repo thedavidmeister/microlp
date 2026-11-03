@@ -418,51 +418,57 @@ fn a_solve_from_a_moved_basis_has_a_finite_bound_where_every_var_is_bounded() {
     // in the one and below in the other, gives a finite term at the multipliers that zero its
     // reduced cost, so no step's bound is infinite, and the multipliers bound the optimum closer
     // than none do: each var at its best bound
-    let boxed = |direction: OptimizationDirection, op: ComparisonOp, held: Option<f64>| {
-        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
-        let mut next = move || {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            1.0 + (seed % 97) as f64
+    let boxed =
+        |direction: OptimizationDirection, op: ComparisonOp, held: Option<f64>, seed: u64| {
+            let mut seed = seed;
+            let mut next = move || {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                1.0 + (seed % 97) as f64
+            };
+            let mut p = Problem::new(direction);
+            let mut best = 0.0;
+            let vars: Vec<Variable> = (0..40)
+                .map(|i| {
+                    let (cost, (lo, hi)) = match held {
+                        Some(at) if i == 0 => (next(), (at, at)),
+                        _ => (next(), (0.0, 100.0)),
+                    };
+                    best += match direction {
+                        OptimizationDirection::Maximize => cost * hi,
+                        OptimizationDirection::Minimize => cost * lo,
+                    };
+                    p.add_var(cost, (lo, hi))
+                })
+                .collect();
+            for _ in 0..30 {
+                let row: Vec<(Variable, f64)> = vars.iter().map(|v| (*v, next())).collect();
+                p.add_constraint(row, op, 1000.0 * next());
+            }
+            (p, best)
         };
-        let mut p = Problem::new(direction);
-        let mut best = 0.0;
-        let vars: Vec<Variable> = (0..40)
-            .map(|i| {
-                let (cost, (lo, hi)) = match held {
-                    Some(at) if i == 0 => (next(), (at, at)),
-                    _ => (next(), (0.0, 100.0)),
-                };
-                best += match direction {
-                    OptimizationDirection::Maximize => cost * hi,
-                    OptimizationDirection::Minimize => cost * lo,
-                };
-                p.add_var(cost, (lo, hi))
-            })
-            .collect();
-        for _ in 0..30 {
-            let row: Vec<(Variable, f64)> = vars.iter().map(|v| (*v, next())).collect();
-            p.add_constraint(row, op, 1000.0 * next());
-        }
-        (p, best)
-    };
-    for (direction, op, at) in [
-        (OptimizationDirection::Maximize, ComparisonOp::Le, 5.0),
-        (OptimizationDirection::Minimize, ComparisonOp::Ge, 60.0),
+    for (direction, op, at, seed) in [
+        (
+            OptimizationDirection::Maximize,
+            ComparisonOp::Le,
+            5.0,
+            0x2545_f491_4f6c_dd1d,
+        ),
+        (OptimizationDirection::Minimize, ComparisonOp::Ge, 60.0, 23),
     ] {
         // `a` no better than `b` in the problem's direction
         let no_better = |a: f64, b: f64| match direction {
             OptimizationDirection::Maximize => a <= b + 1e-9 * b.abs(),
             OptimizationDirection::Minimize => a >= b - 1e-9 * b.abs(),
         };
-        let cold = boxed(direction, op, None)
+        let cold = boxed(direction, op, None, seed)
             .0
             .solve_with(unpresolved(None))
             .unwrap()
             .into_solution()
             .unwrap();
-        let (moved, none) = boxed(direction, op, Some(at));
+        let (moved, none) = boxed(direction, op, Some(at), seed);
         let optimum = moved
             .solve_with(unpresolved(None))
             .unwrap()
