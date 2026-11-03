@@ -408,3 +408,57 @@ fn an_interrupted_solve_hands_on_its_basis() {
     assert!((warm.objective() - cold.objective()).abs() < 1e-6 * cold.objective().abs());
     assert!(warm_pivots < total, "{warm_pivots} of {total}");
 }
+
+#[test]
+fn a_solve_from_a_moved_basis_has_a_finite_bound_where_every_var_is_bounded() {
+    // the dense LP with every var at most 100, and the first held at least `least`: solved from
+    // the optimal basis of `least` 0 with the first held at 5, the basis meets neither its rows
+    // nor its bounds, and every multiplier the solve stands at prices each var's term at a finite
+    // bound; a row's slack, unbounded above, gives a finite term at the multipliers that zero its
+    // reduced cost, so no step's bound is infinite
+    let boxed = |least: f64| {
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            1.0 + (seed % 97) as f64
+        };
+        let mut p = Problem::new(OptimizationDirection::Maximize);
+        let vars: Vec<Variable> = (0..40)
+            .map(|i| p.add_var(next(), (if i == 0 { least } else { 0.0 }, 100.0)))
+            .collect();
+        for _ in 0..30 {
+            let row: Vec<(Variable, f64)> = vars.iter().map(|v| (*v, next())).collect();
+            p.add_constraint(row, ComparisonOp::Le, 1000.0 * next());
+        }
+        p
+    };
+    let cold = boxed(0.0)
+        .solve_with(unpresolved(None))
+        .unwrap()
+        .into_solution()
+        .unwrap();
+    let moved = boxed(5.0);
+    let optimum = moved
+        .solve_with(unpresolved(None))
+        .unwrap()
+        .into_solution()
+        .unwrap()
+        .objective();
+    let mut outcome = moved
+        .solve_with(SolveOptions {
+            basis: cold.basis(),
+            ..unpresolved(Some(1))
+        })
+        .unwrap();
+    let mut steps = 0;
+    while let SolveOutcome::Interrupted(mut going) = outcome {
+        let bound = going.bound().unwrap();
+        assert!(bound.is_finite(), "step {steps}: bound {bound}");
+        assert!(bound >= optimum - 1e-9 * optimum.abs(), "{bound} {optimum}");
+        outcome = SolveOutcome::Interrupted(going).resume().unwrap();
+        steps += 1;
+    }
+    assert!(steps > 0, "a moved basis takes pivots");
+}
