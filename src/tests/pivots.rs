@@ -408,3 +408,91 @@ fn an_interrupted_solve_hands_on_its_basis() {
     assert!((warm.objective() - cold.objective()).abs() < 1e-6 * cold.objective().abs());
     assert!(warm_pivots < total, "{warm_pivots} of {total}");
 }
+
+#[test]
+fn a_solve_from_a_moved_basis_has_a_finite_bound_where_every_var_is_bounded() {
+    // a dense LP of rows at most and a covering one of rows at least, every var within 0..100
+    // and the first held at `held` where given: solved from the optimal basis of none held with
+    // the first held at 5 or 60, the basis meets neither its rows nor its bounds, and every multiplier the
+    // solve stands at prices each var's term at a finite bound; a row's slack, unbounded above
+    // in the one and below in the other, gives a finite term at the multipliers that zero its
+    // reduced cost, so no step's bound is infinite, and the multipliers bound the optimum closer
+    // than none do: each var at its best bound
+    let boxed =
+        |direction: OptimizationDirection, op: ComparisonOp, held: Option<f64>, seed: u64| {
+            let mut seed = seed;
+            let mut next = move || {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                1.0 + (seed % 97) as f64
+            };
+            let mut p = Problem::new(direction);
+            let mut best = 0.0;
+            let vars: Vec<Variable> = (0..40)
+                .map(|i| {
+                    let (cost, (lo, hi)) = match held {
+                        Some(at) if i == 0 => (next(), (at, at)),
+                        _ => (next(), (0.0, 100.0)),
+                    };
+                    best += match direction {
+                        OptimizationDirection::Maximize => cost * hi,
+                        OptimizationDirection::Minimize => cost * lo,
+                    };
+                    p.add_var(cost, (lo, hi))
+                })
+                .collect();
+            for _ in 0..30 {
+                let row: Vec<(Variable, f64)> = vars.iter().map(|v| (*v, next())).collect();
+                p.add_constraint(row, op, 1000.0 * next());
+            }
+            (p, best)
+        };
+    for (direction, op, at, seed) in [
+        (
+            OptimizationDirection::Maximize,
+            ComparisonOp::Le,
+            5.0,
+            0x2545_f491_4f6c_dd1d,
+        ),
+        (OptimizationDirection::Minimize, ComparisonOp::Ge, 60.0, 23),
+    ] {
+        // `a` no better than `b` in the problem's direction
+        let no_better = |a: f64, b: f64| match direction {
+            OptimizationDirection::Maximize => a <= b + 1e-9 * b.abs(),
+            OptimizationDirection::Minimize => a >= b - 1e-9 * b.abs(),
+        };
+        let cold = boxed(direction, op, None, seed)
+            .0
+            .solve_with(unpresolved(None))
+            .unwrap()
+            .into_solution()
+            .unwrap();
+        let (moved, none) = boxed(direction, op, Some(at), seed);
+        let optimum = moved
+            .solve_with(unpresolved(None))
+            .unwrap()
+            .into_solution()
+            .unwrap()
+            .objective();
+        let mut outcome = moved
+            .solve_with(SolveOptions {
+                basis: cold.basis(),
+                ..unpresolved(Some(1))
+            })
+            .unwrap();
+        let mut bounds = Vec::new();
+        while let SolveOutcome::Interrupted(mut going) = outcome {
+            let bound = going.bound().unwrap();
+            assert!(bound.is_finite(), "{direction:?} step {}", bounds.len());
+            assert!(no_better(optimum, bound), "{bound} {optimum}");
+            bounds.push(bound);
+            outcome = SolveOutcome::Interrupted(going).resume().unwrap();
+        }
+        let last = *bounds.last().expect("a moved basis takes pivots");
+        assert!(
+            no_better(last, none) && (last - none).abs() > 1.0,
+            "{direction:?}: {last} against {none}"
+        );
+    }
+}

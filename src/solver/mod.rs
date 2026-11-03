@@ -1272,8 +1272,9 @@ impl Solver {
 
     /// A lower bound on the objective (internal minimize space) of every point
     /// of the model's rows and bounds: the Lagrangian bound of the current
-    /// basis's multipliers on the model's costs. Each row is `a x + s = rhs`,
-    /// so for any multipliers `y` and any such point, `c x = y rhs + Σ_j d_j
+    /// basis's multipliers on the model's costs, each row's moved to zero its
+    /// slack's reduced cost where that pushes the slack towards a bound it
+    /// lacks. Each row is `a x + s = rhs`, so for any multipliers `y` and any such point, `c x = y rhs + Σ_j d_j
     /// x_j` with `d_j = c_j - y a_j` over every var, slacks included; each
     /// term is least at a bound, and the bound `-∞` where that is infinite or
     /// a number is not one. Weak duality makes
@@ -1286,6 +1287,21 @@ impl Solver {
             .map(|&var| self.orig_obj_coeffs[var])
             .collect();
         self.basis_solver.solve_transp_dense_with_etas(&mut y);
+        // a row's slack is in that row alone: where its reduced cost pushes it
+        // towards a bound it lacks, the row's multiplier that zeroes the
+        // reduced cost gives a finite term instead
+        for var in self.num_vars..self.num_total_vars() {
+            let (min, max) = self.model_bounds(var);
+            //guaranteed to be a valid index
+            let column = self.orig_constraints_csc.outer_view(var).unwrap();
+            let Some((r, &coeff)) = column.iter().next() else {
+                continue;
+            };
+            let d = self.orig_obj_coeffs[var] - coeff * y[r];
+            if (d > 0.0 && min.is_infinite()) || (d < 0.0 && max.is_infinite()) {
+                y[r] = self.orig_obj_coeffs[var] / coeff;
+            }
+        }
         let mut bound = CDouble::from(0.0);
         for (r, &rhs) in self.orig_rhs.iter().enumerate() {
             bound.add_product(y[r], rhs);
